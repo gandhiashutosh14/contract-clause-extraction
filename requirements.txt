@@ -1,0 +1,10 @@
+transformers>=4.40
+torch
+accelerate
+python-docx
+pandas
+openpyxl
+tqdm
+
+# Optional, only for --quantized (4-bit causal models on a CUDA GPU)
+# bitsandbytes
