@@ -6,6 +6,66 @@
 
 ---
 
+> **In plain English:** Legal, procurement and compliance teams must find specific obligations, such as one company's right to audit another's records, across many contracts. This tool uses an open language model to pull those clauses into Excel, and each row names its source paragraph for review. It is a tested working prototype, measured on one public contract.
+>
+> **Reading guide:** business readers can read the next three sections, then jump to [SWOT](#swot-analysis) and [where this applies](#where-this-applies). Engineers can go straight to [How it works](#how-it-works).
+
+## The problem in plain English
+
+A company has signed many supplier and partner contracts. Its internal auditor asks two questions: in which contracts may we inspect the other side's books, and how long must records be kept? Today someone opens each contract and reads it. In the public sample contract used here, the answers sit in Articles 9 and 10, among 189 paragraphs ([measured results](#measured-results)).
+
+Large language models (LLMs) read quickly, but they bring two risks. They can return text that sounds right but is not a match, such as a clause about a government audit or a product acceptance test. They can also return text that is not a clause at all: in testing, the smaller model simply repeated the category name. A reviewer cannot trust a spreadsheet of extracted sentences unless each one points back to its source.
+
+This tool writes the rules for what counts, and what does not, into every prompt. It sends only paragraphs with likely words to the model and cleans the answers. The Excel sheet shows the paragraph number and source text beside each result. It began as a take-home exercise in a hiring process and was rebuilt as one command-line tool with tests.
+
+## Executive summary
+
+| Question | Answer |
+|---|---|
+| What problem does this address? | Finding every audit-and-inspection clause in a contract quickly, while keeping each result checkable against its source. |
+| Who has this problem? | In-house legal teams, procurement and vendor-management teams, compliance and internal-audit functions, and law firms doing contract review or due diligence. |
+| What does this repository do? | A Python command-line tool reads a Word or plain-text contract, filters paragraphs by keyword, asks an open Hugging Face model for matching clauses, cleans the answers and writes a traceable Excel sheet. |
+| What has been shown so far? | On a public contract filed with the U.S. Securities and Exchange Commission (SEC), the keyword filter cut 189 paragraphs to 11. FLAN-T5-large, using only a laptop's CPU (main processor), returned 9 rows: 8 correct, 1 false positive and no misses. FLAN-T5-base returned nothing usable, because the parser dropped its two label echoes ([measured results](#measured-results), [output file](contracts/sample_output_flan_t5_large.xlsx)). 12 automated tests pass without a model. |
+| How mature is it? | A working prototype with automated tests in continuous integration (CI). It was evaluated on one contract, judged by one annotator ([status and scope](#status-and-scope)). |
+| What it is not | Not a benchmark and not legal advice. The Mistral-7B whole-document mode is implemented but was not run for the published results. Paragraph mode cannot join a clause that is split across paragraphs. |
+| What it would take to use it for real | Precision and recall measured on many labelled contracts (for example the CUAD dataset in [further reading](#further-reading)); PDF and scanned-document input; secure hosting for confidential contracts; and a defined reviewer workflow with sign-off. |
+
+## How it works, end to end
+
+The diagram shows paragraph mode, which produced the measured results. The [How it works](#how-it-works) diagram further down shows both modes.
+
+```mermaid
+flowchart LR
+    A["Contract as .docx or .txt"] --> B["Numbered paragraphs"]
+    B --> C["Keyword filter"]
+    C -->|"no keyword"| S["Skipped, no model call"]
+    C -->|"keyword found"| D["Prompt with include and exclude rules"]
+    D --> E["Open language model"]
+    E --> F["Answer cleaning and label-echo guard"]
+    F --> G["Excel row with paragraph ID and source text"]
+    G --> H["Reviewer checks each row"]
+```
+
+1. **Read the contract** (`read_paragraphs`). The tool opens a Word (.docx) or plain-text file and numbers each non-empty paragraph, starting at 1. The sample contract has 189 paragraphs.
+2. **Filter by keyword** (`prefilter`). Only paragraphs that contain one of eight words, such as "audit", "inspect" or "books", go on to the model. On the sample, 11 of 189 pass. The `--dry-run` flag lists them without loading a model.
+3. **Build the prompt** (`build_paragraph_prompt`). Each prompt carries the include rules (for example, a duty to keep records for audit) and the exclude rules (for example, government audits), followed by one paragraph.
+4. **Ask the model** (`Seq2SeqBackend`). Paragraph mode sends each prompt to a FLAN-T5 model, which runs on a laptop CPU. Document mode (`CausalBackend`) instead sends the whole contract to a larger model such as Mistral-7B-Instruct on a graphics processing unit (GPU), optionally in 4-bit form. Document mode was not run for the results above.
+5. **Clean the answers** (`parse_paragraph_output`). The parser drops `NO_MATCH` replies, short lines, lines without audit vocabulary, and replies that only repeat the label "Audit and Inspection Rights".
+6. **Write Excel** (`write_excel`). Each row holds the paragraph ID, the first 500 characters of the source paragraph and the extracted text.
+7. **Review.** A person checks each row against its source paragraph. The tool speeds up this step; it does not replace it.
+
+**Worked example.** The committed FLAN-T5-large run ([output file](contracts/sample_output_flan_t5_large.xlsx), [contract text](contracts/sample_contract.txt)) produced these rows, paraphrased here:
+
+| Paragraph ID | What the paragraph says | Verdict |
+|---|---|---|
+| 55, 56 | Each party must keep written records detailed enough to verify revenues and margins, for three years after the final payment on each order | Correct: record-keeping for audit |
+| 58, 61 | Each party must open those records to audit by the other side's independent representatives, at most once a year and with reasonable notice | Correct: audit right |
+| 59, 62 | Those representatives must first sign a confidentiality agreement, and may report only their conclusions | Correct: audit procedure |
+| 60, 63 | The audit right lasts three years from each sales report; a shortfall is paid within thirty days, and if the discrepancy exceeds five percent the audited party pays the audit costs | Correct: audit right and follow-up |
+| 11 | The definition of "Confidential Information", which mentions access to documents | Wrong: the one false positive |
+
+Paragraphs 54 and 57, the headings of Articles 9 and 10, also passed the keyword filter but produced no rows. FLAN-T5-base, given the same 11 paragraphs, produced no clause text; the parser dropped its two replies that only repeated the label.
+
 ## What it is, and why
 
 Legal review teams need to find every place a contract grants one party the right to audit the other: books-and-records access, premises inspection, record-retention duties, audit procedure rules. They also need to *not* pick up look-alikes: government audits, acceptance-testing inspections, the definition of "auditor".
@@ -110,6 +170,68 @@ Working prototype.
 - The causal (Mistral-class) backend and the 4-bit path are implemented but were not run during the refinement (no GPU available). They mirror the original take-home scripts.
 - Paragraph mode cannot join a clause that spans paragraphs; document mode can but depends on a larger model.
 - Excel is the only output format because that was the required deliverable.
+
+## SWOT analysis
+
+A SWOT analysis lists **S**trengths and **W**eaknesses (inside the project) and **O**pportunities and **T**hreats (outside it).
+
+| | Helpful | Harmful |
+|---|---|---|
+| **Internal** | **Strengths**<br>• Every row carries its paragraph number and source text, so a reviewer can verify it without rereading the contract<br>• A cheap keyword filter cut model calls 17x on the sample (189 paragraphs to 11)<br>• Runs locally with open models, so contract text is not sent to an outside service<br>• The rubric is plain data, so a new clause type is a text edit<br>• 12 fast tests with a fake model, including a guard for a failure seen in a real run | **Weaknesses**<br>• Measured on one public contract, judged by one annotator, with no held-out set or agreement check<br>• One false positive in 9 rows, and the smaller base model found nothing<br>• The Mistral-7B document mode and the 4-bit path were not run for the published results<br>• Paragraph mode cannot join a clause that spans paragraphs, and document-mode rows carry no paragraph ID<br>• Only .docx and .txt input, and only Excel output<br>• A clause that uses none of the eight keywords never reaches the model |
+| **External** | **Opportunities**<br>• Measure precision and recall on CUAD, which labels audit-rights clauses<br>• Add other clause types, such as termination or liability caps, by editing the rubric<br>• Swap in stronger open models without changing the rest of the pipeline<br>• Feed results into contract-management and procurement workflows that already run on spreadsheets | **Threats**<br>• Commercial contract-review products and general-purpose LLM tools already offer clause extraction<br>• Legal teams may not accept model output without formal validation<br>• Fast-moving libraries: transformers 5.x removed the `text2text-generation` pipeline, so this code calls the model directly<br>• Access terms can change: gated models already need a Hugging Face login before download<br>• Rules on using AI in legal work are still developing |
+
+**In short:** the design choices (traceable rows, a cheap filter, defensive parsing) suit review work, but accuracy is unproven beyond one contract.
+
+## Where this applies
+
+These are typical settings for audit-clause extraction, not documented deployments.
+
+| Industry | Example use case | What this project's approach contributes |
+|---|---|---|
+| Corporate legal departments | List the audit rights in supplier contracts before an internal audit | A spreadsheet a lawyer can verify row by row |
+| Procurement and vendor management | Check which suppliers must keep records and allow inspections | Include and exclude rules that can be rewritten for other obligations |
+| Financial services | Review outsourcing contracts for access and audit clauses | A local model, so contract text stays on the firm's own machines |
+| Insurance | Check agreements with brokers and outsourced service providers for audit clauses | Row-level traceability that supports a compliance file |
+| Pharmaceuticals and manufacturing | Review supplier quality agreements for site-inspection rights | Rules that separate contractual inspections from regulatory ones |
+| Mergers and acquisitions | Scan a target company's contracts during due diligence | A keyword filter that keeps model cost low across many documents |
+| Licensing and franchising | Find royalty-audit and look-back clauses | Paragraph IDs that show exactly where each look-back period is stated |
+| Commercial real estate | Find landlord rights to inspect premises in leases | A rubric that already covers inspection of premises |
+
+## Glossary
+
+| Term | Plain-English meaning |
+|---|---|
+| Audit and inspection rights | Contract terms that let one party check another's books, records or premises, or that oblige a party to keep records for that purpose. |
+| Clause extraction | Finding and copying the parts of a contract that match a given topic. |
+| Large language model (LLM) | A model trained on large amounts of text that can follow written instructions. |
+| FLAN-T5 | A family of instruction-tuned models from Google; the base and large sizes ran on a laptop CPU here. |
+| Mistral-7B-Instruct | An open instruction-tuned model with about 7 billion parameters, meant for a GPU. |
+| CPU and GPU | A computer's general-purpose processor, and the graphics processor that large models usually need. |
+| Prompt | The instructions and text sent to a model. |
+| Rubric | The written include and exclude rules that define what counts as a match. |
+| Keyword pre-filter | A cheap text search that decides which paragraphs are worth sending to the model. |
+| Label echo | A failure in which the model replies with the category name instead of quoting the contract. |
+| False positive | A result the tool flagged that is not a real match. |
+| Traceability | Being able to follow each result back to its exact source paragraph. |
+| 4-bit quantisation | Storing each model weight in fewer bits so that a large model fits in less GPU memory. |
+| SEC and EDGAR | The U.S. Securities and Exchange Commission, and its free public database of company filings. |
+
+## Further reading
+
+The first three rows are the best starting points for measuring accuracy; the rest cover the models, libraries and data source the tool uses.
+
+| Resource | What it is | Why it matters here |
+|---|---|---|
+| [CUAD: An Expert-Annotated NLP Dataset for Legal Contract Review](https://arxiv.org/abs/2103.06268) — Dan Hendrycks, Collin Burns, Anya Chen and Spencer Ball, 2021 (NeurIPS 2021) | A dataset of commercial contracts labelled with legal experts, whose clause categories include "Audit Rights". | The natural next step for measuring this tool beyond one contract. |
+| [CUAD Dataset](https://www.atticusprojectai.org/cuad) — The Atticus Project | The project's page for CUAD, with links to the dataset, the labelling handbook and the paper, under a Creative Commons licence. | Where to get labelled audit-rights clauses for that evaluation. |
+| [LegalBench: A Collaboratively Built Benchmark for Measuring Legal Reasoning in Large Language Models](https://arxiv.org/abs/2308.11462) — Neel Guha et al., 2023 | A benchmark of legal reasoning tasks for LLMs, including `cuad_audit_right`, which asks whether a clause contains an audit right. | A ready-made test of whether a model recognises audit-right clauses. |
+| [Scaling Instruction-Finetuned Language Models](https://arxiv.org/abs/2210.11416) — Hyung Won Chung et al., 2022 | The paper that released the Flan-T5 checkpoints. | Describes the instruction tuning that lets FLAN-T5 follow a written rubric without task-specific training. |
+| [Mistral 7B](https://arxiv.org/abs/2310.06825) — Albert Q. Jiang et al., 2023 | The technical report for the Mistral 7B model and its instruction-following variant. | Document mode uses Mistral-7B-Instruct by default. |
+| [GPTQ: Accurate Post-Training Quantization for Generative Pre-trained Transformers](https://arxiv.org/abs/2210.17323) — Elias Frantar, Saleh Ashkboos, Torsten Hoefler and Dan Alistarh, 2022 (ICLR 2023) | A method for compressing a trained model's weights to a few bits each with little loss of accuracy. | Background on running 7B-class models on smaller GPUs; this repository uses the bitsandbytes 4-bit loader instead. |
+| [Bitsandbytes](https://huggingface.co/docs/transformers/quantization/bitsandbytes) — Hugging Face Transformers documentation | A guide to loading models in 4-bit and other low-bit forms with the bitsandbytes library. | It is the mechanism behind the `--quantized` flag. |
+| [Transformers documentation](https://huggingface.co/docs/transformers/index) — Hugging Face | Documentation for the Python library that downloads and runs the models. | Both model back ends in `extract_clauses.py` are built on it. |
+| [python-docx documentation](https://python-docx.readthedocs.io/en/latest/) — Steve Canny | Documentation for a Python library that reads and writes Word files. | It reads .docx contracts and was used to create the sample .docx ([provenance](contracts/SOURCE.md)). |
+| [Using EDGAR to Research Investments](https://www.investor.gov/introduction-investing/getting-started/researching-investments/using-edgar-research-investments) — U.S. Securities and Exchange Commission, Investor.gov | A guide to EDGAR, the SEC's free public database of company filings, and to form types such as the 10-K annual report. | The sample contract is an exhibit to a 10-K filing, and EDGAR is a free source of real contracts for wider testing. |
 
 ## License
 
